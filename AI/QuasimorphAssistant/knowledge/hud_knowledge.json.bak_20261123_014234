@@ -1,0 +1,21 @@
+{
+  "game": "Quasimorph",
+  "source": "User-confirmed interface mapping",
+  "confirmed_hud_fields": [
+    {
+      "field": "calories",
+      "meaning": "Character calories / food reserve",
+      "examples": [1325, 1524, 1515, 1507, 1356],
+      "warning": "Do not label this indicator as health or HP."
+    },
+    {
+      "field": "selected_mercenary_health",
+      "meaning": "HP of the mercenary selected for the current mission",
+      "user_confirmed_display_example": 110,
+      "warning": "Do not label this indicator as ammunition or AP."
+    }
+  ],
+  "combat_notifications": {
+    "rule": "Notifications about named entities (for example, an entity dying or suffering a wound) are not automatically the selected mercenary's status."
+  }
+}

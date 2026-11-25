@@ -1,0 +1,9 @@
+Quasimorph tooltip crop diagnostic
+Monitor: 1
+Monitor size: 1920x1080
+Watcher crop box: left=0, top=240, right=720, bottom=840
+Exact crop size: 720x600
+Scaled crop size: 900x750
+Wider diagnostic strip: 0,0 to 960,1080
+Monitor-relative cursor: x=948, y=746
+The red rectangle in tooltip_full_marked shows the exact crop used by watcher.

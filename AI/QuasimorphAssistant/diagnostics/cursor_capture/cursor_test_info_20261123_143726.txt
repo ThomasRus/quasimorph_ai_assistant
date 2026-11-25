@@ -1,0 +1,8 @@
+Quasimorph cursor capture diagnostic
+Monitor: 1
+Monitor bounds: left=0 top=0 width=1920 height=1080
+Windows cursor absolute: x=1026 y=472
+Monitor-relative cursor: x=1026 y=472
+Crop box: left=846 top=337 right=1206 bottom=607
+Full image size: 1920x1080
+Crop output size: 720x540

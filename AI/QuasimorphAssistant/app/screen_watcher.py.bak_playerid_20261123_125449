@@ -1,0 +1,4458 @@
+from __future__ import annotations
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+import ctypes
+
+
+
+
+
+
+
+import io
+
+
+
+
+
+
+
+import os
+
+
+
+
+
+
+
+import queue
+
+
+
+
+
+
+
+import threading
+
+
+
+
+
+
+
+import time
+
+
+
+
+
+
+
+import traceback
+
+
+
+
+
+
+
+from ctypes import wintypes
+
+
+
+
+
+
+
+from datetime import datetime
+
+
+
+
+
+
+
+from pathlib import Path
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+import mss
+
+
+
+
+
+
+
+import ollama
+
+
+
+
+
+
+
+from PIL import Image, ImageChops, ImageStat
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# -------------------- Configuration --------------------
+
+
+
+
+
+
+
+MODEL = "qwen3-vl:4b-instruct"
+
+
+
+
+
+
+
+GAME_PROCESS_NAME = "Quasimorph"
+
+
+
+
+
+
+
+OLLAMA_HOST = "http://127.0.0.1:11434"
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+CAPTURE_INTERVAL_SECONDS = 1.0
+
+
+
+
+
+
+
+ANALYSIS_COOLDOWN_SECONDS = 24.0
+
+
+
+
+
+
+
+HEARTBEAT_SECONDS = 90.0
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Compare the current screen with the last image sent to Qwen, not with
+
+
+
+
+
+
+
+# the immediately previous frame. This filters small frame-to-frame animation.
+
+
+
+
+
+
+
+CHANGE_PIXEL_THRESHOLD = 22
+
+
+
+
+
+
+
+CHANGE_RATIO_THRESHOLD = 0.025       # 2.5% of the 320x180 comparison image
+
+
+
+
+
+
+
+CHANGE_MEAN_THRESHOLD = 2.5          # average grayscale difference, 0..255
+
+
+
+
+
+
+
+CONSECUTIVE_CHANGE_HITS = 2
+
+
+
+
+
+
+
+DIFF_SIZE = (320, 180)
+
+
+
+
+
+
+
+MAX_IMAGE_WIDTH = 1024
+
+
+
+HUD_CROP_BOX = (0, 820, 620, 1080)
+
+
+
+HUD_UPSCALE = 2
+
+
+
+
+
+
+
+STARTUP_COUNTDOWN_SECONDS = 5
+
+
+
+
+
+
+
+MODEL_KEEP_ALIVE = "10m"
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+BASE_DIR = Path(__file__).resolve().parents[1]
+
+
+
+
+
+
+
+LOG_DIR = BASE_DIR / "logs"
+
+
+
+
+
+
+
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+
+
+
+
+
+
+LOG_FILE = LOG_DIR / "screen_watcher.log"
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def is_quasimorph_focused() -> bool:
+
+
+
+
+
+
+
+    """Return True only if the foreground window belongs to Quasimorph."""
+
+
+
+
+
+
+
+    if os.name != "nt":
+
+
+
+
+
+
+
+        return False
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    try:
+
+
+
+
+
+
+
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+
+
+
+
+
+
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        get_foreground = user32.GetForegroundWindow
+
+
+
+
+
+
+
+        get_foreground.argtypes = []
+
+
+
+
+
+
+
+        get_foreground.restype = wintypes.HWND
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        hwnd = get_foreground()
+
+
+
+
+
+
+
+        if not hwnd:
+
+
+
+
+
+
+
+            return False
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        process_id = wintypes.DWORD()
+
+
+
+
+
+
+
+        get_pid = user32.GetWindowThreadProcessId
+
+
+
+
+
+
+
+        get_pid.argtypes = [
+
+
+
+
+
+
+
+            wintypes.HWND,
+
+
+
+
+
+
+
+            ctypes.POINTER(wintypes.DWORD),
+
+
+
+
+
+
+
+        ]
+
+
+
+
+
+
+
+        get_pid.restype = wintypes.DWORD
+
+
+
+
+
+
+
+        get_pid(hwnd, ctypes.byref(process_id))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        if not process_id.value:
+
+
+
+
+
+
+
+            return False
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        open_process = kernel32.OpenProcess
+
+
+
+
+
+
+
+        open_process.argtypes = [
+
+
+
+
+
+
+
+            wintypes.DWORD,
+
+
+
+
+
+
+
+            wintypes.BOOL,
+
+
+
+
+
+
+
+            wintypes.DWORD,
+
+
+
+
+
+
+
+        ]
+
+
+
+
+
+
+
+        open_process.restype = wintypes.HANDLE
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        process_handle = open_process(
+
+
+
+
+
+
+
+            0x1000, False, process_id.value
+
+
+
+
+
+
+
+        )
+
+
+
+
+
+
+
+        if not process_handle:
+
+
+
+
+
+
+
+            return False
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        try:
+
+
+
+
+
+
+
+            query_image = kernel32.QueryFullProcessImageNameW
+
+
+
+
+
+
+
+            query_image.argtypes = [
+
+
+
+
+
+
+
+                wintypes.HANDLE,
+
+
+
+
+
+
+
+                wintypes.DWORD,
+
+
+
+
+
+
+
+                wintypes.LPWSTR,
+
+
+
+
+
+
+
+                ctypes.POINTER(wintypes.DWORD),
+
+
+
+
+
+
+
+            ]
+
+
+
+
+
+
+
+            query_image.restype = wintypes.BOOL
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+            buffer = ctypes.create_unicode_buffer(32768)
+
+
+
+
+
+
+
+            buffer_size = wintypes.DWORD(len(buffer))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+            if not query_image(
+
+
+
+
+
+
+
+                process_handle, 0, buffer, ctypes.byref(buffer_size)
+
+
+
+
+
+
+
+            ):
+
+
+
+
+
+
+
+                return False
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+            process_name = Path(buffer.value).stem
+
+
+
+
+
+
+
+            return process_name.casefold() == GAME_PROCESS_NAME.casefold()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        finally:
+
+
+
+
+
+
+
+            close_handle = kernel32.CloseHandle
+
+
+
+
+
+
+
+            close_handle.argtypes = [wintypes.HANDLE]
+
+
+
+
+
+
+
+            close_handle.restype = wintypes.BOOL
+
+
+
+
+
+
+
+            close_handle(process_handle)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    except Exception:
+
+
+
+
+
+
+
+        return False
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+SYSTEM_PROMPT = """
+
+
+
+
+
+
+
+??????????? ??????? ????????????? HUD. ???????? ?? ? ?????? ???????:
+
+
+
+
+
+
+
+1. ???????:
+
+
+
+- ??????? ?????????????? ???????? ? ????? ???????? ??? ???????????? ???????? ? ??????? ?????????, ?? ????????.
+
+
+
+- ??????? ?????????????? ????????: 1325, 1524, 1515, 1507.
+
+
+
+- ???????? ????? 1750, 1736, 1734 ? 1696 ? ??? ?? ???????? HUD ????? ?????? ????????????? ??????? HP.
+
+
+
+- ??????? ????? ???????????? ??? ??????? ???????? / ????????, ???????? 1736/1800. ??? ????? ???/???????.
+
+
+
+- ?? ??????? ??????? ?????????, ???? ???? ????? ???????????? ????????? HP.
+
+
+
+
+
+
+
+2. ???????? ???????? (HP):
+
+
+
+- HP ?????????? ??? ?????? ???????? ???????????? ????????? ???????????.
+
+
+
+- ?????? ?????????????: 110/110 HP. ????? 110 ? ?????? ?????? ????????, ? ?? ?????????? ???????? ??? ????.
+
+
+
+- ?? ?????? HP ????????????, ???? ?? ?????????? ????? ?????? ? ????????? ??????????? ????????.
+
+
+
+- ???? ????????????, ?????? ?HP ?? ??????? ??????? ???????????. ?? ?????????? ?????? ???? ???????.
+
+
+
+
+
+
+
+3. ??????? ?????:
+
+
+
+- ????????? ???????? ?????? ?????????? ??????????????? ????? ?? HP.
+
+
+
+- ? ????????? ????????? ???????? ????? 0. ????????? ?????? ???????????: 0/14.
+
+
+
+- ??????? ??? ?????? ???????? ??????. ?? ????? ? HP, ????????? ??? AP.
+
+
+
+
+
+
+
+4. ?????????????? ??????????:
+
+
+
+- +2 ??/??? ? ???????????, ? ?? ??????? ????????.
+
+
+
+- ?????????, ??????????, ATM ? ?????? ?????????? ???????? ????????, ?????? ???? ?? ???????? ????????????? ?????.
+
+
+
+- ???????? ???????, ???????? ????? 999/999, ?? ???????? ????????? ????????.
+
+
+
+
+
+
+
+5. ???????????:
+
+
+
+- ????????? ?423: ????????? ???????? ???????? ?????? ???????? ?? ????? ???????????.
+
+
+
+- ????????? ?????????? ???????? ???????? ?????? ???????? ?? ????? ???????????.
+
+
+
+- ??? ????????? ? ?????????? ????????? ??????????. ?? ????? ?? ??? ?????, ??? ??????? ??? ???????? ??????????? ??????? ???????.
+
+
+
+- ??????? ?????? ?????? ?? ??????????? ?????????? ????????.
+
+
+
+
+
+
+
+????? ???????:
+
+
+
+??? ????????? ????? ?????????????? ?? ????? ? ???????????? ????????????? ???????? HUD ??????? ???????????? ? ?????????? ????????. ?? ???????? ??????????. ????? ???????? ???????? ??????????????, ??? ??????? ??????? ????????? ??? ????????? ????? ?????? ?????????? ????????.
+
+
+
+РўС‹ вЂ” Р»РѕРєР°Р»СЊРЅС‹Р№ РІРёР·СѓР°Р»СЊРЅС‹Р№ РЅР°Р±Р»СЋРґР°С‚РµР»СЊ РёРіСЂС‹ Quasimorph.
+
+
+
+
+
+
+
+РђРЅР°Р»РёР·РёСЂСѓР№ РўРћР›Р¬РљРћ РїСЂРёР»РѕР¶РµРЅРЅС‹Р№ С‚РµРєСѓС‰РёР№ СЃРєСЂРёРЅС€РѕС‚. РќРµ РёСЃРїРѕР»СЊР·СѓР№ СЃС‚Р°СЂС‹Рµ РѕС‚С‡С‘С‚С‹, РїСЂРѕС€Р»С‹Рµ РјРёСЃСЃРёРё РёР»Рё РїР°РјСЏС‚СЊ Рѕ РїСЂРµРґС‹РґСѓС‰РёС… РєР°РґСЂР°С…. РќРµ СѓС‚РІРµСЂР¶РґР°Р№, С‡С‚Рѕ РІРёРґРёС€СЊ РёР·РјРµРЅРµРЅРёРµ РѕС‚РЅРѕСЃРёС‚РµР»СЊРЅРѕ РїСЂРѕС€Р»РѕРіРѕ РєР°РґСЂР°.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+РџРћР”РўР’Р•Р Р–Р”РЃРќРќРђРЇ РљРђР РўРђ HUD:
+
+
+
+
+
+
+
+- РСЃРїРѕР»СЊР·СѓР№ РіРµРЅРµС‚РёС‡РµСЃРєСѓСЋ С†РµРїРѕС‡РєСѓ РєР°Рє РїСЂРѕСЃС‚СЂР°РЅСЃС‚РІРµРЅРЅС‹Р№ РѕСЂРёРµРЅС‚РёСЂ.
+
+
+
+
+
+
+
+- РљР°Р»РѕСЂРёРё РїРµСЂСЃРѕРЅР°Р¶Р° РЅР°С…РѕРґСЏС‚СЃСЏ РќР•РџРћРЎР Р•Р”РЎРўР’Р•РќРќРћ РќРђР” РіРµРЅРµС‚РёС‡РµСЃРєРѕР№ С†РµРїРѕС‡РєРѕР№. Р­С‚Рѕ Р·Р°РїР°СЃ РµРґС‹/РєР°Р»РѕСЂРёР№, РќР• Р·РґРѕСЂРѕРІСЊРµ. Р—РЅР°С‡РµРЅРёСЏ РґРёРЅР°РјРёС‡РµСЃРєРёРµ; РїСЂРёРјРµСЂС‹ 1325, 1524, 1639 Рё 1611 вЂ” СЌС‚Рѕ РєР°Р»РѕСЂРёРё.
+
+
+
+
+
+
+
+- Р—РґРѕСЂРѕРІСЊРµ (HP) РІС‹Р±СЂР°РЅРЅРѕРіРѕ РЅР° СЌС‚Сѓ РјРёСЃСЃРёСЋ РЅР°С‘РјРЅРёРєР° РЅР°С…РѕРґРёС‚СЃСЏ РЎР›Р•Р’Рђ РѕС‚ РіРµРЅРµС‚РёС‡РµСЃРєРѕР№ С†РµРїРѕС‡РєРё. HP Р·Р°РІРёСЃРёС‚ РѕС‚ РєРѕРЅРєСЂРµС‚РЅРѕРіРѕ РЅР°С‘РјРЅРёРєР° Рё РјРѕР¶РµС‚ РѕС‚Р»РёС‡Р°С‚СЊСЃСЏ. Р—РЅР°С‡РµРЅРёРµ 110 Р±С‹Р»Рѕ С‚РѕР»СЊРєРѕ РїСЂРёРјРµСЂРѕРј РґР»СЏ РѕРґРЅРѕРіРѕ РЅР°С‘РјРЅРёРєР°, СЌС‚Рѕ РќР• РїРѕСЃС‚РѕСЏРЅРЅРѕРµ Р·РЅР°С‡РµРЅРёРµ.
+
+
+
+
+
+
+
+- Р•РґРёРЅРёС†С‹ Р±РѕР»РµРІРѕРіРѕ РїРѕСЂРѕРіР° РЅР°С…РѕРґСЏС‚СЃСЏ РЎР РђР—РЈ РЎР›Р•Р’Рђ РѕС‚ РїРѕРєР°Р·Р°С‚РµР»СЏ HP. Р’ СЃРїРѕРєРѕР№РЅРѕРј СЃРѕСЃС‚РѕСЏРЅРёРё РёС… Р·РЅР°С‡РµРЅРёРµ СЂР°РІРЅРѕ 0. РќРµ РїСѓС‚Р°Р№ РёС… СЃ HP, РєР°Р»РѕСЂРёСЏРјРё, РїР°С‚СЂРѕРЅР°РјРё РёР»Рё AP.
+
+
+
+
+
+
+
+- Р•СЃР»Рё С‡РёСЃР»Рѕ РЅРµР»СЊР·СЏ РѕРґРЅРѕР·РЅР°С‡РЅРѕ СЃРѕРїРѕСЃС‚Р°РІРёС‚СЊ СЃ СЌС‚РёРј СЂР°СЃРїРѕР»РѕР¶РµРЅРёРµРј, РЅР°РїРёС€Рё В«РЅРµ СѓРґР°Р»РѕСЃСЊ РЅР°РґС‘Р¶РЅРѕ РѕРїСЂРµРґРµР»РёС‚СЊВ». РќРµ СѓРіР°РґС‹РІР°Р№ РЅР°Р·РЅР°С‡РµРЅРёРµ С‡РёСЃР»Р°.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+РљР›РђРЎРЎРР¤РРљРђР¦РРЇ РЎРЈР©Р•РЎРўР’:
+
+
+
+
+
+
+
+- РРіСЂРѕРє вЂ” РЅР°С‘РјРЅРёРє, РєРѕС‚РѕСЂС‹Рј СѓРїСЂР°РІР»СЏРµС‚ РїРѕР»СЊР·РѕРІР°С‚РµР»СЊ. Р­С‚Рѕ РѕС‚РґРµР»СЊРЅР°СЏ РєР°С‚РµРіРѕСЂРёСЏ, РЅРµ РЅР°Р·С‹РІР°Р№ РµРіРѕ РїСЂРѕСЃС‚Рѕ РґСЂСѓР¶РµСЃС‚РІРµРЅРЅС‹Рј NPC.
+
+
+
+
+
+
+
+- Р’СЂР°Рі вЂ” Р»СЋР±РѕР№ РќР• РїРѕРґРєРѕРЅС‚СЂРѕР»СЊРЅС‹Р№ РёРіСЂРѕРєСѓ NPC, РЅР°Рґ РєРѕС‚РѕСЂС‹Рј СЏСЃРЅРѕ РІРёРґРЅР° РљР РђРЎРќРђРЇ РїРѕР»РѕСЃРєР° Р·РґРѕСЂРѕРІСЊСЏ.
+
+
+
+
+
+
+
+- Р”СЂСѓРі вЂ” Р»СЋР±РѕР№ РќР• РїРѕРґРєРѕРЅС‚СЂРѕР»СЊРЅС‹Р№ РёРіСЂРѕРєСѓ NPC, РЅР°Рґ РєРѕС‚РѕСЂС‹Рј СЏСЃРЅРѕ РІРёРґРЅР° Р—Р•Р›РЃРќРђРЇ РїРѕР»РѕСЃРєР° Р·РґРѕСЂРѕРІСЊСЏ.
+
+
+
+
+
+
+
+- РЎРЅР°С‡Р°Р»Р° РѕРїСЂРµРґРµР»Рё РєРѕРЅРєСЂРµС‚РЅРѕРіРѕ NPC РЅР° РёРіСЂРѕРІРѕР№ СЃС†РµРЅРµ, Р·Р°С‚РµРј РїСЂРѕРІРµСЂСЊ РїРѕР»РѕСЃРєСѓ РЅРµРїРѕСЃСЂРµРґСЃС‚РІРµРЅРЅРѕ РЅР°Рґ РЅРёРј РёР»Рё РІРёР·СѓР°Р»СЊРЅРѕ СЃРІСЏР·Р°РЅРЅСѓСЋ СЃ РЅРёРј. РќРµ РёС‰Рё Р·РµР»С‘РЅС‹Рµ/РєСЂР°СЃРЅС‹Рµ РїРёРєСЃРµР»Рё РїРѕ РІСЃРµРјСѓ СЌРєСЂР°РЅСѓ: РёРЅС‚РµСЂС„РµР№СЃ СЃРѕРґРµСЂР¶РёС‚ РјРЅРѕРіРѕ Р·РµР»С‘РЅС‹С… СЌР»РµРјРµРЅС‚РѕРІ, РЅРµ РѕС‚РЅРѕСЃСЏС‰РёС…СЃСЏ Рє РїРѕР»РѕСЃРєР°Рј Р·РґРѕСЂРѕРІСЊСЏ.
+
+
+
+
+
+
+
+- РќРµ РѕРїСЂРµРґРµР»СЏР№ СЃС‚РѕСЂРѕРЅСѓ РїРѕ РёРјРµРЅРё РёР»Рё С‚РёРїСѓ СЃСѓС‰РµСЃС‚РІР°. Р•СЃР»Рё РїРѕР»РѕСЃР° РЅРµ РІРёРґРЅР°, РµС‘ С†РІРµС‚ РЅРµСЏСЃРµРЅ РёР»Рё РЅРµР»СЊР·СЏ СЃРІСЏР·Р°С‚СЊ РµС‘ СЃ РєРѕРЅРєСЂРµС‚РЅС‹Рј NPC, СѓРєР°Р¶Рё В«СЃС‚РѕСЂРѕРЅР° РЅРµРёР·РІРµСЃС‚РЅР°В».
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+РџРћР”РўР’Р•Р Р–Р”РЃРќРќР«Р• РРњР•РќРђ Р РЈР’Р•Р”РћРњР›Р•РќРРЇ:
+
+
+
+
+
+
+
+- В«РЎРІРѕР±РѕРґРЅС‹Р№ СѓРјРёСЂР°РµС‚В» вЂ” СѓРІРµРґРѕРјР»РµРЅРёРµ Рѕ СЃРјРµСЂС‚Рё РЅР°С‘РјРЅРёРєР° СЃ РїРѕР·С‹РІРЅС‹Рј В«РЎРІРѕР±РѕРґРЅС‹Р№В».
+
+
+
+
+
+
+
+- В«РРЅСЃРїРµРєС‚РѕСЂ СѓРјРёСЂР°РµС‚В» вЂ” СѓРІРµРґРѕРјР»РµРЅРёРµ Рѕ СЃРјРµСЂС‚Рё РЅР°С‘РјРЅРёРєР° СЃ РїРѕР·С‹РІРЅС‹Рј В«РРЅСЃРїРµРєС‚РѕСЂВ».
+
+
+
+
+
+
+
+- В«AP СѓРјРёСЂР°РµС‚В» вЂ” СѓРІРµРґРѕРјР»РµРЅРёРµ Рѕ РіРёР±РµР»Рё СЂРѕР±РѕС‚Р° AP. Р—РґРµСЃСЊ AP вЂ” СЂРѕР±РѕС‚, РќР• РѕС‡РєРё РґРµР№СЃС‚РІРёР№.
+
+
+
+
+
+
+
+- Р§РёСЃР»РѕРІРѕР№ РїСЂРµС„РёРєСЃ РїРµСЂРµРґ СѓРІРµРґРѕРјР»РµРЅРёРµРј, РЅР°РїСЂРёРјРµСЂ В«294:В», РїРѕРєР° РЅРµ РёРјРµРµС‚ РїРѕРґС‚РІРµСЂР¶РґС‘РЅРЅРѕРіРѕ Р·РЅР°С‡РµРЅРёСЏ. РќРµ РёРЅС‚РµСЂРїСЂРµС‚РёСЂСѓР№ РµРіРѕ.
+
+
+
+
+
+
+
+- Р›СЋР±РѕРµ СЃРѕРѕР±С‰РµРЅРёРµ РІРёРґР° В«[РёРјСЏ] СЃС‚СЂР°РґР°РµС‚ РѕС‚ [СЂР°РЅР°]В» РѕС‚РЅРѕСЃРёС‚СЃСЏ Рє СѓРєР°Р·Р°РЅРЅРѕРјСѓ СЃСѓС‰РµСЃС‚РІСѓ, Р° РЅРµ Р°РІС‚РѕРјР°С‚РёС‡РµСЃРєРё Рє РёРіСЂРѕРєСѓ.
+
+
+
+
+
+
+
+- РќРµ СЃРјРµС€РёРІР°Р№ РІС‹Р±СЂР°РЅРЅРѕРіРѕ РЅР°С‘РјРЅРёРєР°, РґСЂСѓР¶РµСЃС‚РІРµРЅРЅС‹С… NPC, РІСЂР°Р¶РµСЃРєРёС… NPC Рё СЂРѕР±РѕС‚РѕРІ.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+РџР РђР’РР›Рђ Р”РћРЎРўРћР’Р•Р РќРћРЎРўР:
+
+
+
+
+
+
+
+- РќРµ РІС‹РґСѓРјС‹РІР°Р№ РѕР±СЉРµРєС‚С‹, РЅР°Р·РІР°РЅРёСЏ, С‡РёСЃР»Р°, С…Р°СЂР°РєС‚РµСЂРёСЃС‚РёРєРё, РїСЂРёРЅР°РґР»РµР¶РЅРѕСЃС‚СЊ РёР»Рё СЃРѕР±С‹С‚РёСЏ.
+
+
+
+
+
+
+
+- Р Р°Р·РґРµР»СЏР№ С‚Рѕ, С‡С‚Рѕ СЏСЃРЅРѕ РІРёРґРЅРѕ, Рё С‚Рѕ, С‡С‚Рѕ СЏРІР»СЏРµС‚СЃСЏ РїСЂРµРґРїРѕР»РѕР¶РµРЅРёРµРј.
+
+
+
+
+
+
+
+- Р•СЃР»Рё РїРѕР»РѕСЃРєР° Р·РґРѕСЂРѕРІСЊСЏ РѕС‚РЅРѕСЃРёС‚СЃСЏ Рє NPC РЅРµСѓРІРµСЂРµРЅРЅРѕ, РЅРµ РєР»Р°СЃСЃРёС„РёС†РёСЂСѓР№ РµРіРѕ РєР°Рє РІСЂР°РіР° РёР»Рё РґСЂСѓРіР°.
+
+
+
+
+
+
+
+- Р•СЃР»Рё С‚РµРєСЃС‚ РјРµР»РєРёР№ РёР»Рё РЅРµС‡РёС‚Р°РµРјС‹Р№, С‚Р°Рє Рё СЃРєР°Р¶Рё.
+
+
+
+
+
+
+
+- РќРµ РґР°РІР°Р№ С‚Р°РєС‚РёС‡РµСЃРєРёР№ СЃРѕРІРµС‚, РµСЃР»Рё РѕРЅ РЅРµ СЃР»РµРґСѓРµС‚ РЅРµРїРѕСЃСЂРµРґСЃС‚РІРµРЅРЅРѕ РёР· С‚РµРєСѓС‰РµРіРѕ РёР·РѕР±СЂР°Р¶РµРЅРёСЏ.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+РћС‚РІРµС‚СЊ РєСЂР°С‚РєРѕ, РЅРµ Р±РѕР»РµРµ 160 СЃР»РѕРІ, СЃС‚СЂРѕРіРѕ РїРѕ СЃС‚СЂСѓРєС‚СѓСЂРµ:
+
+
+
+
+
+
+
+1. Р­РєСЂР°РЅ: С‡С‚Рѕ СЃРµР№С‡Р°СЃ РѕС‚РєСЂС‹С‚Рѕ.
+
+
+
+
+
+
+
+2. Р’С‹Р±СЂР°РЅРЅС‹Р№ РЅР°С‘РјРЅРёРє: РєР°Р»РѕСЂРёРё, HP Рё Р±РѕРµРІРѕР№ РїРѕСЂРѕРі вЂ” РѕС‚РґРµР»СЊРЅРѕ; РЅРµРёР·РІРµСЃС‚РЅС‹Рµ РїРѕРєР°Р·Р°С‚РµР»Рё С‚Р°Рє Рё РѕР±РѕР·РЅР°С‡СЊ.
+
+
+
+
+
+
+
+3. РЎСѓС‰РµСЃС‚РІР°: РґР»СЏ РєР°Р¶РґРѕРіРѕ СЂР°Р·Р»РёС‡РёРјРѕРіРѕ NPC СѓРєР°Р¶Рё РёРјСЏ/РѕРїРёСЃР°РЅРёРµ Рё РєР°С‚РµРіРѕСЂРёСЋ (РёРіСЂРѕРє, РІСЂР°Рі, РґСЂСѓРі, СЃС‚РѕСЂРѕРЅР° РЅРµРёР·РІРµСЃС‚РЅР°). РЈРєР°Р·С‹РІР°Р№ С†РІРµС‚ РїРѕР»РѕСЃС‹ С‚РѕР»СЊРєРѕ РµСЃР»Рё РѕРЅ РѕС‚С‡С‘С‚Р»РёРІРѕ РІРёРґРµРЅ РЅР°Рґ СЌС‚РёРј NPC.
+
+
+
+
+
+
+
+4. РЈРІРµРґРѕРјР»РµРЅРёСЏ: С‚РѕС‡РЅС‹Р№ СЃСѓР±СЉРµРєС‚ Рё СЃРѕР±С‹С‚РёРµ; РЅРµ РїСЂРёРїРёСЃС‹РІР°Р№ СЃРѕР±С‹С‚РёРµ РёРіСЂРѕРєСѓ Р±РµР· РїРѕРґС‚РІРµСЂР¶РґРµРЅРёСЏ.
+
+
+
+
+
+
+
+5. РќРµРѕРїСЂРµРґРµР»С‘РЅРЅРѕСЃС‚СЊ Рё СЃРѕРІРµС‚: РїРµСЂРµС‡РёСЃР»Рё РІР°Р¶РЅС‹Рµ СЃРѕРјРЅРµРЅРёСЏ; СЃРѕРІРµС‚ РґР°РІР°Р№ С‚РѕР»СЊРєРѕ РїСЂРё РґРѕСЃС‚Р°С‚РѕС‡РЅС‹С… РѕСЃРЅРѕРІР°РЅРёСЏС….""".strip()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def log_line(message: str) -> None:
+
+
+
+
+
+
+
+    stamp = f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {message}"
+
+
+
+
+
+
+
+    print(stamp, flush=True)
+
+
+
+
+
+
+
+    with LOG_FILE.open("a", encoding="utf-8") as file:
+
+
+
+
+
+
+
+        file.write(stamp + "\n")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def log_report(report: str) -> None:
+
+
+
+
+
+
+
+    stamp = f"[{datetime.now():%Y-%m-%d %H:%M:%S}] Qwen:"
+
+
+
+
+
+
+
+    print("\n" + stamp, flush=True)
+
+
+
+
+
+
+
+    print(report, flush=True)
+
+
+
+
+
+
+
+    with LOG_FILE.open("a", encoding="utf-8") as file:
+
+
+
+
+
+
+
+        file.write(stamp + "\n" + report + "\n\n")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def choose_monitor(monitors: list[dict]) -> int:
+
+
+
+
+
+
+
+    print("\nДоступные области захвата:")
+
+
+
+
+
+
+
+    for index, monitor in enumerate(monitors):
+
+
+
+
+
+
+
+        label = "Все мониторы (единый рабочий стол)" if index == 0 else f"Монитор {index}"
+
+
+
+
+
+
+
+        print(
+
+
+
+
+
+
+
+            f"  {index}: {label} — {monitor['width']}x{monitor['height']} "
+
+
+
+
+
+
+
+            f"(x={monitor['left']}, y={monitor['top']})"
+
+
+
+
+
+
+
+        )
+
+
+
+
+
+
+
+    default = 1 if len(monitors) > 1 else 0
+
+
+
+
+
+
+
+    while True:
+
+
+
+
+
+
+
+        raw = input(f"\nНомер области для захвата [Enter = {default}]: ").strip()
+
+
+
+
+
+
+
+        if not raw:
+
+
+
+
+
+
+
+            return default
+
+
+
+
+
+
+
+        try:
+
+
+
+
+
+
+
+            selected = int(raw)
+
+
+
+
+
+
+
+        except ValueError:
+
+
+
+
+
+
+
+            print("Введите номер цифрами.")
+
+
+
+
+
+
+
+            continue
+
+
+
+
+
+
+
+        if 0 <= selected < len(monitors):
+
+
+
+
+
+
+
+            return selected
+
+
+
+
+
+
+
+        print(f"Допустимый диапазон: 0–{len(monitors) - 1}.")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def capture_rgb(sct: mss.MSS, monitor: dict) -> Image.Image:
+
+
+
+
+
+
+
+    shot = sct.grab(monitor)
+
+
+
+
+
+
+
+    return Image.frombytes("RGB", shot.size, shot.rgb)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def make_diff_image(image: Image.Image) -> Image.Image:
+
+
+
+
+
+
+
+    return image.resize(DIFF_SIZE, Image.Resampling.BILINEAR).convert("L")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def changed_ratio(reference: Image.Image, current: Image.Image) -> tuple[float, float]:
+
+
+
+
+
+
+
+    diff = ImageChops.difference(reference, current)
+
+
+
+
+
+
+
+    mean_difference = ImageStat.Stat(diff).mean[0]
+
+
+
+
+
+
+
+    histogram = diff.histogram()
+
+
+
+
+
+
+
+    changed_pixels = sum(histogram[CHANGE_PIXEL_THRESHOLD + 1 :])
+
+
+
+
+
+
+
+    ratio = changed_pixels / (DIFF_SIZE[0] * DIFF_SIZE[1])
+
+
+
+
+
+
+
+    return ratio, mean_difference
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def encode_for_model(image: Image.Image) -> bytes:
+
+
+
+
+
+
+
+    if image.width > MAX_IMAGE_WIDTH:
+
+
+
+
+
+
+
+        new_height = round(image.height * MAX_IMAGE_WIDTH / image.width)
+
+
+
+
+
+
+
+        image = image.resize((MAX_IMAGE_WIDTH, new_height), Image.Resampling.LANCZOS)
+
+
+
+
+
+
+
+    buffer = io.BytesIO()
+
+
+
+
+
+
+
+    image.save(buffer, format="JPEG", quality=90, optimize=True)
+
+
+
+
+
+
+
+    return buffer.getvalue()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def encode_hud_for_model(image: Image.Image) -> bytes:
+
+
+
+    left, top, right, bottom = HUD_CROP_BOX
+
+
+
+
+
+
+
+    if image.width < right or image.height < bottom:
+
+
+
+        raise ValueError(
+
+
+
+            f"HUD crop requires at least {right}x{bottom}, "
+
+
+
+            f"but captured image is {image.width}x{image.height}"
+
+
+
+        )
+
+
+
+
+
+
+
+    hud = image.crop(HUD_CROP_BOX)
+
+
+
+    hud = hud.resize(
+
+
+
+        (hud.width * HUD_UPSCALE, hud.height * HUD_UPSCALE),
+
+
+
+        Image.Resampling.LANCZOS,
+
+
+
+    )
+
+
+
+
+
+
+
+    buffer = io.BytesIO()
+
+
+
+    hud.save(buffer, format="JPEG", quality=95, optimize=True)
+
+
+
+    return buffer.getvalue()
+
+
+
+
+
+
+
+
+
+
+
+def encode_hud_context_for_model(image: Image.Image) -> bytes:
+    # Full screen for reading tooltips outside the HUD crop.
+    max_width = 1440
+
+    if image.width > max_width:
+        new_height = round(image.height * max_width / image.width)
+        image = image.resize(
+            (max_width, new_height),
+            Image.Resampling.LANCZOS,
+        )
+
+    buffer = io.BytesIO()
+    image.save(buffer, format="JPEG", quality=92, optimize=True)
+    return buffer.getvalue()
+
+
+def ask_model(client: ollama.Client, image: Image.Image, reason: str) -> str:
+    hud_context_bytes = encode_hud_context_for_model(image)
+    hud_image_bytes = encode_hud_for_model(image)
+
+    hud_system = (
+        "You are a Quasimorph HUD reader. You receive two images of the "
+        "SAME captured moment. Image 1 is the full screen and may contain "
+        "tooltips anywhere. Image 2 is the enlarged bottom-left HUD crop. "
+        "Reply in Russian.\n"
+        "Identify statistics primarily by their distinctive visual "
+        "background graphics, not by approximate position alone.\n\n"
+        "HP VISUAL ANCHOR: the mercenary health value is in the same HUD "
+        "graph/field as the DNA-chain illustration. Read the number "
+        "belonging to that DNA-chain graph. Do not take the adjacent "
+        "pulse-graphic value as HP.\n"
+        "PAIN THRESHOLD VISUAL ANCHOR: its value is displayed against "
+        "a human pulse/heartbeat waveform image, resembling the trace "
+        "on a medical monitor. Read the number belonging to that "
+        "pulse-graphic field. This is the pain threshold, not HP.\n"
+        "The pain-threshold field is also located immediately to the "
+        "left of the HP field, but use the DNA and pulse graphics as "
+        "the primary identifiers.\n"
+        "CALORIES: the large four-digit resource counter is calories, "
+        "never HP. Example: 1696/1800.\n"
+        "A known test showed HP of 98 or 99 after injury while pain "
+        "threshold remained 0. These are separate indicators, not "
+        "fixed values.\n"
+        "The maximum HP varies by mercenary. Do not assume it is always 110.\n"
+        "A tooltip describes the hovered control but is NOT a numeric "
+        "HUD reading. Never copy numbers or ratios from a tooltip into "
+        "HP, calories or pain threshold fields.\n"
+        "If the cursor or tooltip obscures a value, report it as unreadable. "
+        "Do not duplicate one indicator's value in another field.\n"
+        "+2 ??/??? means regeneration per turn, not current HP.\n"
+        "Do not confuse mercenary HP with object or NPC health.\n"
+        "Ignore inventory and battle-log details. If a value is ambiguous, "
+        "say so instead of guessing."
+    )
+
+    hud_prompt = (
+        "Read the HUD indicators and any visible tooltip. "
+        "The tooltip identifies the hovered control but does NOT provide "
+        "the numeric value of an indicator. Never copy a tooltip ratio "
+        "such as 0/1 into HP or pain threshold. Read the numbers directly "
+        "from the corresponding HUD indicators.\n"
+        "Return this structure:\n"
+        "\u041a\u0430\u043b\u043e\u0440\u0438\u0438: "
+        "\u0442\u0435\u043a\u0443\u0449\u0435\u0435/\u043c\u0430\u043a\u0441 "
+        "\u0435\u0441\u043b\u0438 \u043e\u0431\u0430 "
+        "\u0447\u0438\u0442\u0430\u044e\u0442\u0441\u044f; "
+        "\u0438\u043d\u0430\u0447\u0435 "
+        "\u0443\u043a\u0430\u0436\u0438 "
+        "\u0442\u043e\u043b\u044c\u043a\u043e "
+        "\u0447\u0438\u0442\u0430\u0435\u043c\u043e\u0435 "
+        "\u0447\u0438\u0441\u043b\u043e\n"
+        "HP: \u0442\u0435\u043a\u0443\u0449\u0435\u0435 "
+        "\u0447\u0438\u0441\u043b\u043e; "
+        "\u043c\u0430\u043a\u0441\u0438\u043c\u0443\u043c "
+        "\u0442\u043e\u043b\u044c\u043a\u043e "
+        "\u0435\u0441\u043b\u0438 "
+        "\u043e\u0442\u0434\u0435\u043b\u044c\u043d\u043e "
+        "\u0432\u0438\u0434\u0435\u043d\n"
+        "\u0411\u043e\u043b\u0435\u0432\u043e\u0439 "
+        "\u043f\u043e\u0440\u043e\u0433: "
+        "\u0442\u0435\u043a\u0443\u0449\u0435\u0435 "
+        "\u0447\u0438\u0441\u043b\u043e; "
+        "\u043c\u0430\u043a\u0441\u0438\u043c\u0443\u043c "
+        "\u0442\u043e\u043b\u044c\u043a\u043e "
+        "\u0435\u0441\u043b\u0438 "
+        "\u043e\u0442\u0434\u0435\u043b\u044c\u043d\u043e "
+        "\u0432\u0438\u0434\u0435\u043d\n"
+        "\u0420\u0435\u0433\u0435\u043d\u0435\u0440\u0430\u0446\u0438\u044f: "
+        "\u0437\u043d\u0430\u0447\u0435\u043d\u0438\u0435 "
+        "\u041e\u0417/\u0445\u043e\u0434 "
+        "\u0438\u043b\u0438 \u043d\u0435 \u0432\u0438\u0434\u043d\u043e\n"
+        "\u041f\u043e\u0434\u0441\u043a\u0430\u0437\u043a\u0430: "
+        "\u0442\u043e\u0447\u043d\u044b\u0439 "
+        "\u0442\u0435\u043a\u0441\u0442 "
+        "\u0432\u0441\u043f\u043b\u044b\u0432\u0430\u044e\u0449\u0435\u0439 "
+        "\u043f\u043e\u0434\u0441\u043a\u0430\u0437\u043a\u0438 "
+        "\u0438\u043b\u0438 "
+        "\u043d\u0435 \u0432\u0438\u0434\u043d\u0430\n"
+        "\u041f\u0440\u043e\u0447\u0438\u0435 "
+        "\u0441\u043e\u0441\u0442\u043e\u044f\u043d\u0438\u044f: "
+        "\u0442\u043e\u043b\u044c\u043a\u043e "
+        "\u0447\u0451\u0442\u043a\u043e "
+        "\u0447\u0438\u0442\u0430\u0435\u043c\u044b\u0435\n"
+        "\u041d\u0435\u0443\u0432\u0435\u0440\u0435\u043d\u043d\u043e\u0441\u0442\u044c: "
+        "\u043a\u0430\u043a\u0438\u0435 "
+        "\u043f\u043e\u043a\u0430\u0437\u0430\u0442\u0435\u043b\u0438 "
+        "\u043d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c "
+        "\u0447\u0438\u0442\u0430\u0442\u044c "
+        "\u0438\u043b\u0438 "
+        "\u0441\u043e\u043f\u043e\u0441\u0442\u0430\u0432\u0438\u0442\u044c."
+    )
+
+    scene_system = (
+        "You are observing Quasimorph gameplay. Reply in Russian.\n"
+        "Inspect the entire playable area, not just the HUD or battle log.\n\n"
+        "STEP 1 ? DETECT CHARACTERS:\n"
+        "Find every visible living humanoid or creature other than the "
+        "player-controlled character. Look carefully at small figures, "
+        "figures near machinery, and characters in the background. "
+        "Do not require a visible health bar to detect a character. "
+        "Do not omit a character merely because its name is unreadable.\n"
+        "Give every detected character a unique temporary ID and a "
+        "screen position such as left, center, right, upper or lower.\n\n"
+        "STEP 2 ? CLASSIFY EACH DETECTED CHARACTER:\n"
+        "GREEN horizontal health bar directly above and visually linked "
+        "to that same character = FRIEND.\n"
+        "RED horizontal health bar directly above and visually linked "
+        "to that same character = ENEMY.\n"
+        "No clearly visible bar, or uncertain connection between bar "
+        "and character = UNKNOWN SIDE.\n"
+        "Do not infer side from name, clothing, faction, pose, behavior "
+        "or battle-log text.\n\n"
+        "A green or red UI element, icon, number, button, blood mark or "
+        "floor effect is not a character health bar. The bar must be "
+        "above the actual character. If several characters are close "
+        "together, do not guess which one owns the bar.\n\n"
+        "Describe the player-controlled character separately. List "
+        "corpses separately from living characters. Do not count "
+        "turrets, vehicles, machinery, objects or UI icons as living NPCs "
+        "unless their appearance clearly shows a living character or creature.\n"
+        "Do not report numeric HUD statistics; they are analyzed separately.\n"
+        "Do not invent characters, names, counts or events. If the scene "
+        "is genuinely too unclear to detect characters, say so explicitly. "
+        "Never replace the analysis with empty placeholders or ellipses."
+    )
+
+    scene_prompt = (
+        f"Reason for analysis: {reason}.\n"
+        "Scan the whole playable area. First enumerate every visible "
+        "living non-player character or creature, including small or "
+        "distant figures. Give each one an ID and approximate screen position.\n"
+        "Then check the area immediately above EACH listed character "
+        "and classify it using the color of its own health bar. "
+        "If the character is visible but the bar cannot be linked to it, "
+        "classify its side as unknown. Do not skip the detection step.\n"
+        "Fill every field with observations. If a category is empty, "
+        "write that none were detected rather than using dots.\n"
+        "Use this structure in Russian:\n"
+        "\u0416\u0438\u0432\u044b\u0435 NPC: "
+        "\u043f\u0435\u0440\u0435\u0447\u0438\u0441\u043b\u0438 "
+        "\u043a\u0430\u0436\u0434\u043e\u0433\u043e "
+        "\u0438 \u0435\u0433\u043e "
+        "\u043f\u043e\u043b\u043e\u0436\u0435\u043d\u0438\u0435\n"
+        "\u0418\u0433\u0440\u043e\u043a: "
+        "\u0443\u043f\u0440\u0430\u0432\u043b\u044f\u0435\u043c\u044b\u0439 "
+        "\u043f\u0435\u0440\u0441\u043e\u043d\u0430\u0436\n"
+        "\u0412\u0440\u0430\u0433\u0438: "
+        "\u0438\u043c\u0435\u043d\u0430 \u0438\u043b\u0438 ID, "
+        "\u0446\u0432\u0435\u0442 \u0438 "
+        "\u0440\u0430\u0441\u043f\u043e\u043b\u043e\u0436\u0435\u043d\u0438\u0435 "
+        "\u043f\u043e\u043b\u043e\u0441\u043a\u0438\n"
+        "\u0414\u0440\u0443\u0437\u044c\u044f: "
+        "\u0438\u043c\u0435\u043d\u0430 \u0438\u043b\u0438 ID, "
+        "\u0446\u0432\u0435\u0442 \u0438 "
+        "\u043f\u043e\u043b\u043e\u0436\u0435\u043d\u0438\u0435 "
+        "\u043f\u043e\u043b\u043e\u0441\u043a\u0438\n"
+        "\u0421\u0442\u043e\u0440\u043e\u043d\u0430 "
+        "\u043d\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043d\u0430: "
+        "\u0432\u0438\u0434\u0438\u043c\u044b\u0435 NPC "
+        "\u0431\u0435\u0437 "
+        "\u043d\u0430\u0434\u0451\u0436\u043d\u043e\u0439 "
+        "\u043a\u043b\u0430\u0441\u0441\u0438\u0444\u0438\u043a\u0430\u0446\u0438\u0438\n"
+        "\u0422\u0440\u0443\u043f\u044b "
+        "\u0438 \u043e\u0431\u044a\u0435\u043a\u0442\u044b: "
+        "\u043a\u0440\u0430\u0442\u043a\u043e\n"
+        "\u0411\u043e\u0435\u0432\u043e\u0439 "
+        "\u0436\u0443\u0440\u043d\u0430\u043b: "
+        "\u0442\u043e\u043b\u044c\u043a\u043e "
+        "\u0447\u0438\u0442\u0430\u0435\u043c\u044b\u0435 "
+        "\u0441\u043e\u0431\u044b\u0442\u0438\u044f\n"
+        "\u041e\u0441\u043d\u043e\u0432\u0430\u043d\u0438\u0435 "
+        "\u043a\u043b\u0430\u0441\u0441\u0438\u0444\u0438\u043a\u0430\u0446\u0438\u0438: "
+        "\u043a\u0430\u043a\u0430\u044f "
+        "\u043f\u043e\u043b\u043e\u0441\u043a\u0430 "
+        "\u043d\u0430\u0434 \u043a\u0430\u043a\u0438\u043c "
+        "\u043f\u0435\u0440\u0441\u043e\u043d\u0430\u0436\u0435\u043c\n"
+        "\u041d\u0435\u0443\u0432\u0435\u0440\u0435\u043d\u043d\u043e\u0441\u0442\u044c: "
+        "\u0447\u0442\u043e \u043d\u0435 "
+        "\u0443\u0434\u0430\u043b\u043e\u0441\u044c "
+        "\u0443\u0432\u0438\u0434\u0435\u0442\u044c "
+        "\u0438\u043b\u0438 "
+        "\u0441\u043e\u043f\u043e\u0441\u0442\u0430\u0432\u0438\u0442\u044c."
+    )
+
+    def run_one(
+        label: str,
+        system_text: str,
+        user_text: str,
+        image_data: bytes | list[bytes],
+        max_tokens: int,
+    ) -> str:
+        image_list = (
+            image_data if isinstance(image_data, list)
+            else [image_data]
+        )
+
+        messages = [
+            {"role": "system", "content": system_text},
+            {"role": "user", "content": user_text, "images": image_list},
+        ]
+
+        try:
+            response = client.chat(
+                model=MODEL,
+                messages=messages,
+                keep_alive=MODEL_KEEP_ALIVE,
+                options={
+                    "temperature": 0.1,
+                    "num_predict": max_tokens,
+                    "num_ctx": 10240,
+                },
+            )
+
+            content = (response.message.content or "").strip()
+
+            if not content:
+                response = client.chat(
+                    model=MODEL,
+                    messages=messages,
+                    keep_alive=MODEL_KEEP_ALIVE,
+                    options={
+                        "temperature": 0.1,
+                        "num_predict": max_tokens,
+                        "num_ctx": 10240,
+                    },
+                )
+                content = (response.message.content or "").strip()
+
+            if content:
+                return content
+
+            return (
+                "\u041c\u043e\u0434\u0435\u043b\u044c "
+                "\u0432\u0435\u0440\u043d\u0443\u043b\u0430 "
+                "\u043f\u0443\u0441\u0442\u043e\u0439 "
+                "\u043e\u0442\u0432\u0435\u0442."
+            )
+
+        except Exception as exc:
+            return (
+                "\u041e\u0448\u0438\u0431\u043a\u0430 "
+                "\u0430\u043d\u0430\u043b\u0438\u0437\u0430 "
+                f"{label}: {exc}"
+            )
+
+    # HUD gets the full screen for tooltips plus the enlarged crop for numbers.
+    hud_report = run_one(
+        "HUD",
+        hud_system,
+        hud_prompt,
+        [hud_context_bytes, hud_image_bytes],
+        220,
+    )
+
+    # Gameplay gets only the normal full screenshot.
+    scene_report = run_one(
+        "gameplay",
+        scene_system,
+        scene_prompt,
+        hud_context_bytes,
+        400,
+    )
+
+    return (
+        "=== HUD: \u043f\u043e\u043a\u0430\u0437\u0430\u0442\u0435\u043b\u0438 "
+        "\u043d\u0430\u0451\u043c\u043d\u0438\u043a\u0430 ===\n"
+        + hud_report
+        + "\n\n=== "
+        "\u0418\u0433\u0440\u043e\u0432\u0430\u044f "
+        "\u0441\u0438\u0442\u0443\u0430\u0446\u0438\u044f ===\n"
+        + scene_report
+    )
+
+
+class SharedFrame:
+
+
+
+
+
+
+
+    def __init__(self) -> None:
+
+
+
+
+
+
+
+        self.lock = threading.Lock()
+
+
+
+
+
+
+
+        self.image: Image.Image | None = None
+
+
+
+
+
+
+
+        self.captured_at = 0.0
+
+
+
+
+
+
+
+        self.error: Exception | None = None
+
+
+
+
+
+
+
+        self.ready = threading.Event()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    def set_image(self, image: Image.Image) -> None:
+
+
+
+
+
+
+
+        with self.lock:
+
+
+
+
+
+
+
+            self.image = image.copy()
+
+
+
+
+
+
+
+            self.captured_at = time.monotonic()
+
+
+
+
+
+
+
+        self.ready.set()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    def get(self) -> tuple[Image.Image | None, float]:
+
+
+
+
+
+
+
+        with self.lock:
+
+
+
+
+
+
+
+            return self.image.copy() if self.image is not None else None, self.captured_at
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def capture_worker(stop_event: threading.Event, shared: SharedFrame, monitor: dict) -> None:
+
+
+
+
+
+
+
+    try:
+
+
+
+
+
+
+
+        with mss.MSS() as sct:
+
+
+
+
+
+
+
+            while not stop_event.is_set():
+
+
+
+
+
+
+
+                shared.set_image(capture_rgb(sct, monitor))
+
+
+
+
+
+
+
+                stop_event.wait(CAPTURE_INTERVAL_SECONDS)
+
+
+
+
+
+
+
+    except Exception as exc:
+
+
+
+
+
+
+
+        shared.error = exc
+
+
+
+
+
+
+
+        shared.ready.set()
+
+
+
+
+
+
+
+        stop_event.set()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def model_worker(stop_event: threading.Event, jobs: queue.Queue, results: queue.Queue) -> None:
+
+
+
+
+
+
+
+    client = ollama.Client(host=OLLAMA_HOST, timeout=180.0)
+
+
+
+
+
+
+
+    while not stop_event.is_set():
+
+
+
+
+
+
+
+        try:
+
+
+
+
+
+
+
+            job = jobs.get(timeout=0.25)
+
+
+
+
+
+
+
+        except queue.Empty:
+
+
+
+
+
+
+
+            continue
+
+
+
+
+
+
+
+        if job is None:
+
+
+
+
+
+
+
+            jobs.task_done()
+
+
+
+
+
+
+
+            break
+
+
+
+
+
+
+
+        image, reason = job
+
+
+
+
+
+
+
+        try:
+
+
+
+
+
+
+
+            report = ask_model(client, image, reason)
+
+
+
+
+
+
+
+            results.put((report, None))
+
+
+
+
+
+
+
+        except Exception as exc:
+
+
+
+
+
+
+
+            results.put((None, exc))
+
+
+
+
+
+
+
+        finally:
+
+
+
+
+
+
+
+            jobs.task_done()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def main() -> int:
+
+
+
+
+
+
+
+    print("=" * 70)
+
+
+
+
+
+
+
+    print("Quasimorph Assistant — Screen Watcher v1.6")
+
+
+
+
+
+
+
+    print(f"Модель: {MODEL}")
+
+
+
+
+
+
+
+    print(f"Захват экрана: каждые {CAPTURE_INTERVAL_SECONDS:.1f} с")
+
+
+
+
+
+
+
+    print(f"Минимальная пауза между анализами: {ANALYSIS_COOLDOWN_SECONDS:.0f} с")
+
+
+
+
+
+
+
+    print(f"Порог изменения: {CHANGE_RATIO_THRESHOLD * 100:.1f}% пикселей и средняя разница {CHANGE_MEAN_THRESHOLD:.1f}")
+
+
+
+
+
+
+
+    print(f"Контрольный анализ без изменений: каждые {HEARTBEAT_SECONDS:.0f} с")
+
+
+
+
+
+
+
+    print("Сравнение идёт с последним кадром, отправленным Qwen; мелкая анимация фильтруется.")
+
+
+
+
+
+
+
+    print("Qwen получает только текущий кадр — старые отчёты не передаются в контекст.")
+
+
+
+
+
+
+
+    print("Скриншоты не сохраняются и отправляются только локальному Ollama.")
+
+
+
+
+
+
+
+    print("Остановка: Ctrl+C в этом окне.")
+
+
+
+
+
+
+
+    print("=" * 70)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    client = ollama.Client(host=OLLAMA_HOST, timeout=30.0)
+
+
+
+
+
+
+
+    try:
+
+
+
+
+
+
+
+        client.list()
+
+
+
+
+
+
+
+    except Exception as exc:
+
+
+
+
+
+
+
+        print(f"Не удалось подключиться к Ollama на {OLLAMA_HOST}: {exc}")
+
+
+
+
+
+
+
+        print("Убедись, что Ollama запущена.")
+
+
+
+
+
+
+
+        return 2
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    with mss.MSS() as sct:
+
+
+
+
+
+
+
+        monitors = sct.monitors
+
+
+
+
+
+
+
+        if len(monitors) < 2:
+
+
+
+
+
+
+
+            print("Не удалось обнаружить монитор для захвата.")
+
+
+
+
+
+
+
+            return 3
+
+
+
+
+
+
+
+        selected = choose_monitor(monitors)
+
+
+
+
+
+
+
+        monitor = dict(monitors[selected])
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    print("\nПереключись в Quasimorph. Начинаю захват через:")
+
+
+
+
+
+
+
+    for remaining in range(STARTUP_COUNTDOWN_SECONDS, 0, -1):
+
+
+
+
+
+
+
+        print(f"  {remaining}...", end="\r", flush=True)
+
+
+
+
+
+
+
+        time.sleep(1)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    stop_event = threading.Event()
+
+
+
+
+
+
+
+    shared = SharedFrame()
+
+
+
+
+
+
+
+    jobs: queue.Queue = queue.Queue(maxsize=1)
+
+
+
+
+
+
+
+    results: queue.Queue = queue.Queue()
+
+
+
+
+
+
+
+    capture_thread = threading.Thread(target=capture_worker, args=(stop_event, shared, monitor), daemon=True)
+
+
+
+
+
+
+
+    ai_thread = threading.Thread(target=model_worker, args=(stop_event, jobs, results), daemon=True)
+
+
+
+
+
+
+
+    capture_thread.start()
+
+
+
+
+
+
+
+    ai_thread.start()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    if not shared.ready.wait(timeout=10):
+
+
+
+
+
+
+
+        print("Не удалось получить первый кадр с экрана.")
+
+
+
+
+
+
+
+        stop_event.set()
+
+
+
+
+
+
+
+        return 4
+
+
+
+
+
+
+
+    if shared.error:
+
+
+
+
+
+
+
+        print(f"Ошибка захвата экрана: {shared.error}")
+
+
+
+
+
+
+
+        stop_event.set()
+
+
+
+
+
+
+
+        return 5
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    initial_image, initial_ts = shared.get()
+
+
+
+
+
+
+
+    if initial_image is None:
+
+
+
+
+
+
+
+        print("Первый кадр пустой.")
+
+
+
+
+
+
+
+        stop_event.set()
+
+
+
+
+
+
+
+        return 6
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    reference_small = make_diff_image(initial_image)
+
+
+
+
+
+
+
+    last_seen_capture_ts = initial_ts
+
+
+
+
+
+
+
+    last_analysis_at = 0.0
+
+
+
+
+
+
+
+    analysis_busy = False
+
+
+
+
+
+
+
+    consecutive_hits = 0
+
+
+
+
+
+
+
+    pending_image: Image.Image | None = None
+
+
+
+
+
+
+
+    pending_reason = ""
+
+
+
+
+
+
+
+    game_focused = is_quasimorph_focused()
+
+
+
+
+
+
+
+    awaiting_game_frame = False
+
+
+
+
+
+
+
+    focus_changed_at = 0.0
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    def submit(image: Image.Image, reason: str) -> None:
+
+
+
+
+
+
+
+        nonlocal analysis_busy, last_analysis_at, reference_small, consecutive_hits, pending_image, pending_reason
+
+
+
+
+
+
+
+        if not is_quasimorph_focused():
+
+
+
+
+
+
+
+            log_line("\u0418\u0433\u0440\u0430 \u043d\u0435 \u0432 \u0444\u043e\u043a\u0443\u0441\u0435 \u2014 \u0430\u043d\u0430\u043b\u0438\u0437 \u043f\u0440\u043e\u043f\u0443\u0449\u0435\u043d")
+
+
+
+
+
+
+
+            return
+
+
+
+
+
+
+
+        try:
+
+
+
+
+
+
+
+            jobs.put_nowait((image.copy(), reason))
+
+
+
+
+
+
+
+        except queue.Full:
+
+
+
+
+
+
+
+            return
+
+
+
+
+
+
+
+        # Move the comparison baseline to the exact image sent to the model.
+
+
+
+
+
+
+
+        reference_small = make_diff_image(image)
+
+
+
+
+
+
+
+        analysis_busy = True
+
+
+
+
+
+
+
+        last_analysis_at = time.monotonic()
+
+
+
+
+
+
+
+        consecutive_hits = 0
+
+
+
+
+
+
+
+        pending_image = None
+
+
+
+
+
+
+
+        pending_reason = ""
+
+
+
+
+
+
+
+        log_line(f"Отправлен кадр на анализ: {reason}")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    print("\nНаблюдение запущено. Первичный анализ отправляется модели.", flush=True)
+
+
+
+
+
+
+
+    submit(initial_image, "первичный снимок текущей сессии")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    try:
+
+
+
+
+
+
+
+        while not stop_event.is_set():
+
+
+
+
+
+
+
+            time.sleep(0.20)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+            if shared.error:
+
+
+
+
+
+
+
+                log_line(f"Ошибка захвата экрана: {shared.error}")
+
+
+
+
+
+
+
+                break
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+            while True:
+
+
+
+
+
+
+
+                try:
+
+
+
+
+
+
+
+                    report, error = results.get_nowait()
+
+
+
+
+
+
+
+                except queue.Empty:
+
+
+
+
+
+
+
+                    break
+
+
+
+
+
+
+
+                analysis_busy = False
+
+
+
+
+
+
+
+                if error is not None:
+
+
+
+
+
+
+
+                    log_line(f"Ошибка анализа Qwen: {error}")
+
+
+
+
+
+
+
+                elif report:
+
+
+
+
+
+
+
+                    log_report(report)
+
+
+
+
+
+
+
+                results.task_done()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+            current_focus = is_quasimorph_focused()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+            if current_focus != game_focused:
+
+
+
+
+
+
+
+                game_focused = current_focus
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                if game_focused:
+
+
+
+
+
+
+
+                    awaiting_game_frame = True
+
+
+
+
+
+
+
+                    focus_changed_at = time.monotonic()
+
+
+
+
+
+
+
+                    log_line(
+
+
+
+
+
+
+
+                        "Quasimorph \u0441\u043d\u043e\u0432\u0430 "
+
+
+
+
+
+
+
+                        "\u0432 \u0444\u043e\u043a\u0443\u0441\u0435 "
+
+
+
+
+
+
+
+                        "\u2014 \u0430\u043d\u0430\u043b\u0438\u0437 "
+
+
+
+
+
+
+
+                        "\u0432\u043e\u0437\u043e\u0431\u043d\u043e\u0432\u043b\u0451\u043d"
+
+
+
+
+
+
+
+                    )
+
+
+
+
+
+
+
+                else:
+
+
+
+
+
+
+
+                    awaiting_game_frame = False
+
+
+
+
+
+
+
+                    pending_image = None
+
+
+
+
+
+
+
+                    pending_reason = ""
+
+
+
+
+
+
+
+                    consecutive_hits = 0
+
+
+
+
+
+
+
+                    log_line(
+
+
+
+
+
+
+
+                        "\u0418\u0433\u0440\u0430 \u043d\u0435 "
+
+
+
+
+
+
+
+                        "\u0432 \u0444\u043e\u043a\u0443\u0441\u0435 "
+
+
+
+
+
+
+
+                        "\u2014 \u0430\u043d\u0430\u043b\u0438\u0437 "
+
+
+
+
+
+
+
+                        "\u043f\u0440\u043e\u043f\u0443\u0449\u0435\u043d"
+
+
+
+
+
+
+
+                    )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+            current_image, captured_at = shared.get()
+
+
+
+
+
+
+
+            if current_image is not None and captured_at != last_seen_capture_ts:
+
+
+
+
+
+
+
+                last_seen_capture_ts = captured_at
+
+
+
+
+
+
+
+                current_small = make_diff_image(current_image)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                if not game_focused:
+
+
+
+
+
+
+
+                    # Do not retain desktop frames as analysis candidates.
+
+
+
+
+
+
+
+                    reference_small = current_small
+
+
+
+
+
+
+
+                    consecutive_hits = 0
+
+
+
+
+
+
+
+                    pending_image = None
+
+
+
+
+
+
+
+                    pending_reason = ""
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                elif awaiting_game_frame:
+
+
+
+
+
+
+
+                    # Ignore frames captured before the focus transition.
+
+
+
+
+
+
+
+                    if captured_at >= focus_changed_at:
+
+
+
+
+
+
+
+                        reference_small = current_small
+
+
+
+
+
+
+
+                        pending_image = current_image.copy()
+
+
+
+
+
+
+
+                        pending_reason = "Quasimorph returned to foreground"
+
+
+
+
+
+
+
+                        consecutive_hits = 0
+
+
+
+
+
+
+
+                        awaiting_game_frame = False
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                else:
+
+
+
+
+
+
+
+                    ratio, mean_diff = changed_ratio(
+
+
+
+
+
+
+
+                        reference_small, current_small
+
+
+
+
+
+
+
+                    )
+
+
+
+
+
+
+
+                    changed_enough = (
+
+
+
+
+
+
+
+                        ratio >= CHANGE_RATIO_THRESHOLD
+
+
+
+
+
+
+
+                        and mean_diff >= CHANGE_MEAN_THRESHOLD
+
+
+
+
+
+
+
+                    )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                    if changed_enough:
+
+
+
+
+
+
+
+                        consecutive_hits += 1
+
+
+
+
+
+
+
+                        pending_image = current_image.copy()
+
+
+
+
+
+
+
+                        pending_reason = (
+
+
+
+
+
+
+
+                            f"Stable screen change: "
+
+
+
+
+
+
+
+                            f"{ratio * 100:.1f}% of pixels, "
+
+
+
+
+
+
+
+                            f"mean difference {mean_diff:.1f}"
+
+
+
+
+
+
+
+                        )
+
+
+
+
+
+
+
+                    else:
+
+
+
+
+
+
+
+                        consecutive_hits = 0
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                    if (
+
+
+
+
+
+
+
+                        consecutive_hits < CONSECUTIVE_CHANGE_HITS
+
+
+
+
+
+
+
+                        and pending_image is not None
+
+
+
+
+
+
+
+                    ):
+
+
+
+
+
+
+
+                        pass
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+            now = time.monotonic()
+
+
+
+
+
+
+
+            cooldown_passed = (now - last_analysis_at) >= ANALYSIS_COOLDOWN_SECONDS
+
+
+
+
+
+
+
+            heartbeat_due = (now - last_analysis_at) >= HEARTBEAT_SECONDS
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+            if (game_focused and not awaiting_game_frame
+
+
+
+
+
+
+
+                    and not analysis_busy and cooldown_passed):
+
+
+
+
+
+
+
+                if pending_image is not None:
+
+
+
+
+
+
+
+                    submit(pending_image, pending_reason or "изменение экрана")
+
+
+
+
+
+
+
+                elif heartbeat_due:
+
+
+
+
+
+
+
+                    latest_image, _ = shared.get()
+
+
+
+
+
+
+
+                    if latest_image is not None:
+
+
+
+
+
+
+
+                        submit(latest_image, "периодическая проверка текущего состояния")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    except KeyboardInterrupt:
+
+
+
+
+
+
+
+        print("\nОстановка наблюдателя...")
+
+
+
+
+
+
+
+    finally:
+
+
+
+
+
+
+
+        stop_event.set()
+
+
+
+
+
+
+
+        try:
+
+
+
+
+
+
+
+            jobs.put_nowait(None)
+
+
+
+
+
+
+
+        except queue.Full:
+
+
+
+
+
+
+
+            pass
+
+
+
+
+
+
+
+        capture_thread.join(timeout=2.0)
+
+
+
+
+
+
+
+        ai_thread.join(timeout=2.0)
+
+
+
+
+
+
+
+        print("Наблюдение остановлено.")
+
+
+
+
+
+
+
+    return 0
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+if __name__ == "__main__":
+
+
+
+
+
+
+
+    try:
+
+
+
+
+
+
+
+        raise SystemExit(main())
+
+
+
+
+
+
+
+    except KeyboardInterrupt:
+
+
+
+
+
+
+
+        print("\nНаблюдение остановлено пользователем.")
+
+
+
+
+
+
+
+    except Exception:
+
+
+
+
+
+
+
+        traceback.print_exc()
+
+
+
+
+
+
+
+        input("Произошла непредвиденная ошибка. Нажми Enter для выхода...")
+
+
+
+
+
+
+

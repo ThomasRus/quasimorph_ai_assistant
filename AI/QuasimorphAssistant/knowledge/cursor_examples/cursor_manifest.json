@@ -1,0 +1,317 @@
+[
+  {
+    "id": "20261123_131313_806493",
+    "category": "floor",
+    "label": "Ordinary floor tile",
+    "captured_at": "2026-11-23T13:13:13.984985+03:00",
+    "foreground_process": "Quasimorph",
+    "monitor": {
+      "index": 1,
+      "width": 1920,
+      "height": 1080,
+      "left": 0,
+      "top": 0
+    },
+    "cursor_position": {
+      "screen": [
+        846,
+        406
+      ],
+      "monitor": [
+        846,
+        406
+      ]
+    },
+    "crop_box": [
+      606,
+      226,
+      1086,
+      586
+    ],
+    "notes": "",
+    "files": {
+      "full_screen": "knowledge\\cursor_examples\\floor\\full_20261123_131313_806493.png",
+      "cursor_zoom": "knowledge\\cursor_examples\\floor\\cursor_zoom_20261123_131313_806493.png"
+    }
+  },
+  {
+    "id": "20261123_131354_167447",
+    "category": "movement",
+    "label": "Accessible tile / movement path",
+    "captured_at": "2026-11-23T13:13:54.295594+03:00",
+    "foreground_process": "Quasimorph",
+    "monitor": {
+      "index": 1,
+      "width": 1920,
+      "height": 1080,
+      "left": 0,
+      "top": 0
+    },
+    "cursor_position": {
+      "screen": [
+        846,
+        296
+      ],
+      "monitor": [
+        846,
+        296
+      ]
+    },
+    "crop_box": [
+      606,
+      116,
+      1086,
+      476
+    ],
+    "notes": "",
+    "files": {
+      "full_screen": "knowledge\\cursor_examples\\movement\\full_20261123_131354_167447.png",
+      "cursor_zoom": "knowledge\\cursor_examples\\movement\\cursor_zoom_20261123_131354_167447.png"
+    }
+  },
+  {
+    "id": "20261123_131435_902629",
+    "category": "ally_hover",
+    "label": "Hovering over an ally",
+    "captured_at": "2026-11-23T13:14:36.037712+03:00",
+    "foreground_process": "Quasimorph",
+    "monitor": {
+      "index": 1,
+      "width": 1920,
+      "height": 1080,
+      "left": 0,
+      "top": 0
+    },
+    "cursor_position": {
+      "screen": [
+        818,
+        515
+      ],
+      "monitor": [
+        818,
+        515
+      ]
+    },
+    "crop_box": [
+      578,
+      335,
+      1058,
+      695
+    ],
+    "notes": "",
+    "files": {
+      "full_screen": "knowledge\\cursor_examples\\ally_hover\\full_20261123_131435_902629.png",
+      "cursor_zoom": "knowledge\\cursor_examples\\ally_hover\\cursor_zoom_20261123_131435_902629.png"
+    }
+  },
+  {
+    "id": "20261123_131519_238709",
+    "category": "inventory_hover",
+    "label": "Hovering over an inventory item",
+    "captured_at": "2026-11-23T13:15:19.341365+03:00",
+    "foreground_process": "Quasimorph",
+    "monitor": {
+      "index": 1,
+      "width": 1920,
+      "height": 1080,
+      "left": 0,
+      "top": 0
+    },
+    "cursor_position": {
+      "screen": [
+        852,
+        417
+      ],
+      "monitor": [
+        852,
+        417
+      ]
+    },
+    "crop_box": [
+      612,
+      237,
+      1092,
+      597
+    ],
+    "notes": "",
+    "files": {
+      "full_screen": "knowledge\\cursor_examples\\inventory_hover\\full_20261123_131519_238709.png",
+      "cursor_zoom": "knowledge\\cursor_examples\\inventory_hover\\cursor_zoom_20261123_131519_238709.png"
+    }
+  },
+  {
+    "id": "20261123_131602_628068",
+    "category": "blocked_tile",
+    "label": "Inaccessible tile",
+    "captured_at": "2026-11-23T13:16:02.734386+03:00",
+    "foreground_process": "Quasimorph",
+    "monitor": {
+      "index": 1,
+      "width": 1920,
+      "height": 1080,
+      "left": 0,
+      "top": 0
+    },
+    "cursor_position": {
+      "screen": [
+        745,
+        486
+      ],
+      "monitor": [
+        745,
+        486
+      ]
+    },
+    "crop_box": [
+      505,
+      306,
+      985,
+      666
+    ],
+    "notes": "",
+    "files": {
+      "full_screen": "knowledge\\cursor_examples\\blocked_tile\\full_20261123_131602_628068.png",
+      "cursor_zoom": "knowledge\\cursor_examples\\blocked_tile\\cursor_zoom_20261123_131602_628068.png"
+    }
+  },
+  {
+    "id": "20261123_131627_468026",
+    "category": "aim_attack",
+    "label": "Aiming / attack",
+    "captured_at": "2026-11-23T13:16:27.581311+03:00",
+    "foreground_process": "Quasimorph",
+    "monitor": {
+      "index": 1,
+      "width": 1920,
+      "height": 1080,
+      "left": 0,
+      "top": 0
+    },
+    "cursor_position": {
+      "screen": [
+        817,
+        619
+      ],
+      "monitor": [
+        817,
+        619
+      ]
+    },
+    "crop_box": [
+      577,
+      439,
+      1057,
+      799
+    ],
+    "notes": "",
+    "files": {
+      "full_screen": "knowledge\\cursor_examples\\aim_attack\\full_20261123_131627_468026.png",
+      "cursor_zoom": "knowledge\\cursor_examples\\aim_attack\\cursor_zoom_20261123_131627_468026.png"
+    }
+  },
+  {
+    "id": "20261123_131713_808444",
+    "category": "interactable_hover",
+    "label": "Hovering over an interactable object",
+    "captured_at": "2026-11-23T13:17:13.957287+03:00",
+    "foreground_process": "Quasimorph",
+    "monitor": {
+      "index": 1,
+      "width": 1920,
+      "height": 1080,
+      "left": 0,
+      "top": 0
+    },
+    "cursor_position": {
+      "screen": [
+        1018,
+        551
+      ],
+      "monitor": [
+        1018,
+        551
+      ]
+    },
+    "crop_box": [
+      778,
+      371,
+      1258,
+      731
+    ],
+    "notes": "",
+    "files": {
+      "full_screen": "knowledge\\cursor_examples\\interactable_hover\\full_20261123_131713_808444.png",
+      "cursor_zoom": "knowledge\\cursor_examples\\interactable_hover\\cursor_zoom_20261123_131713_808444.png"
+    }
+  },
+  {
+    "id": "20261123_131904_317886",
+    "category": "enemy_hover",
+    "label": "Hovering over an enemy",
+    "captured_at": "2026-11-23T13:19:04.467378+03:00",
+    "foreground_process": "Quasimorph",
+    "monitor": {
+      "index": 1,
+      "width": 1920,
+      "height": 1080,
+      "left": 0,
+      "top": 0
+    },
+    "cursor_position": {
+      "screen": [
+        960,
+        696
+      ],
+      "monitor": [
+        960,
+        696
+      ]
+    },
+    "crop_box": [
+      720,
+      516,
+      1200,
+      876
+    ],
+    "notes": "",
+    "files": {
+      "full_screen": "knowledge\\cursor_examples\\enemy_hover\\full_20261123_131904_317886.png",
+      "cursor_zoom": "knowledge\\cursor_examples\\enemy_hover\\cursor_zoom_20261123_131904_317886.png"
+    }
+  },
+  {
+    "id": "20261123_132551_819059",
+    "category": "corpse_hover",
+    "label": "Hovering over a corpse",
+    "captured_at": "2026-11-23T13:25:52.016407+03:00",
+    "foreground_process": "Quasimorph",
+    "monitor": {
+      "index": 1,
+      "width": 1920,
+      "height": 1080,
+      "left": 0,
+      "top": 0
+    },
+    "cursor_position": {
+      "screen": [
+        963,
+        447
+      ],
+      "monitor": [
+        963,
+        447
+      ]
+    },
+    "crop_box": [
+      723,
+      267,
+      1203,
+      627
+    ],
+    "notes": "",
+    "files": {
+      "full_screen": "knowledge\\cursor_examples\\corpse_hover\\full_20261123_132551_819059.png",
+      "cursor_zoom": "knowledge\\cursor_examples\\corpse_hover\\cursor_zoom_20261123_132551_819059.png"
+    }
+  }
+]

@@ -1,0 +1,52 @@
+{
+  "game": "Quasimorph",
+  "source": "User-confirmed interface mapping; update only with user-confirmed facts",
+  "hud_layout": {
+    "landmark": "genetic_chain",
+    "fields": [
+      {
+        "field": "calories",
+        "meaning": "Character calorie / food reserve",
+        "position": "Immediately above the genetic chain",
+        "examples": [1325, 1524, 1515, 1507, 1639, 1624, 1611, 1356],
+        "warning": "Do not label this indicator as health or HP. Values are dynamic."
+      },
+      {
+        "field": "selected_mercenary_health",
+        "meaning": "HP of the mercenary selected for the current mission",
+        "position": "To the left of the genetic chain",
+        "example_from_one_mercenary": 110,
+        "warning": "HP differs between mercenaries and can change. 110 is an example, not a fixed value. Do not label HP as ammunition or AP."
+      },
+      {
+        "field": "pain_threshold",
+        "meaning": "Pain-threshold units of the selected mercenary",
+        "position": "Immediately to the left of the health indicator",
+        "calm_state_value": 0,
+        "warning": "Do not confuse this with HP, calories, ammunition, or action points. If unreadable, report unknown."
+      }
+    ]
+  },
+  "entity_classification": {
+    "player_controlled": "The mercenary currently controlled by the player; keep separate from friendly NPCs.",
+    "enemy_npc": "Any NPC not controlled by the player that has a clearly visible red health bar directly above or visually attached to that NPC.",
+    "friendly_npc": "Any NPC not controlled by the player that has a clearly visible green health bar directly above or visually attached to that NPC.",
+    "unknown": "If the health bar is absent, obscured, too small, or cannot be spatially associated with a specific NPC, classify allegiance as unknown.",
+    "important_warning": "The interface contains many green elements. Never classify an NPC by finding green pixels anywhere on the screen. First identify a candidate NPC, then inspect only the small area immediately above / attached to that NPC for its health bar. Do not infer allegiance from the NPC name or type."
+  },
+  "known_entities": {
+    "mercenary_callsigns": ["РЎРІРѕР±РѕРґРЅС‹Р№", "РРЅСЃРїРµРєС‚РѕСЂ"],
+    "robot_designations": ["AP"]
+  },
+  "combat_notifications": {
+    "РЎРІРѕР±РѕРґРЅС‹Р№ СѓРјРёСЂР°РµС‚": "The mercenary with callsign РЎРІРѕР±РѕРґРЅС‹Р№ is dying / has a death notification. This is not automatically the player-controlled mercenary.",
+    "РРЅСЃРїРµРєС‚РѕСЂ СѓРјРёСЂР°РµС‚": "The mercenary with callsign РРЅСЃРїРµРєС‚РѕСЂ is dying / has a death notification. This is not automatically the player-controlled mercenary.",
+    "AP СѓРјРёСЂР°РµС‚": "The AP robot is dying / has a destruction notification. AP here is a robot, not action points.",
+    "unknown_numeric_prefix": "A numeric prefix such as 294 before an entity notification has no confirmed meaning; do not interpret it."
+  },
+  "notification_rules": [
+    "A notification about a named entity describes that entity, not the selected mercenary, unless the identity is explicitly confirmed.",
+    "A message that an entity suffers a wound applies to that named entity, not automatically to the player.",
+    "Distinguish the selected mercenary, friendly NPCs, enemy NPCs, and robots."
+  ]
+}
